@@ -6,42 +6,44 @@ from scipy import signal
 from sklearn.decomposition import FastICA
 
 # 保存波形数据到文件 避免每次都处理一遍视频耽误时间
-saveSequenceData=False
+saveSequenceData=True
 loadSequenceData=True
 # 文件夹路径
 basePath='C://Users//wangt//Desktop//heartbeat-master (1)//heartbeat-master//atrial fibrillation//'
+# 视频帧率 会影响下面算法
+Fs=30
 
-if(loadSequenceData):
+if(loadSequenceData): # 加载保存的波形数组
     file=open(basePath+"sequence_n.txt","r")
     N=int(file.read())
+    num_zeros=1024-N
     file.close()
+
+    sequence_b = np.zeros(N)
+    sequence_g = np.zeros(N)
+    sequence_r = np.zeros(N)
+
     file=open(basePath+"sequence_b.txt","r")
     for idx in range(N):
-        sequence_b = np.zeros(N)
         sequence_b[idx] = float(file.readline())
-        print(sequence_b[idx])
     file.close()
+
     file=open(basePath+"sequence_g.txt","r")
     for idx in range(N):
-        sequence_g = np.zeros(N)
         sequence_g[idx] = float(file.readline())
     file.close()
+
     file=open(basePath+"sequence_r.txt","r")
     for idx in range(N):
-        sequence_r = np.zeros(N)
         sequence_r[idx] = float(file.readline())
     file.close()
 
-    for idx in range(N):
-        print(sequence_b[idx])
 else:
     #from tools.detect import MtcnnDetector
     #import faceswap
     cap=cv2.VideoCapture(basePath+'my_video.mp4')
 
     n=0
-    rate=0
-    Fs=30
     N=int(cap.get(7))#根据的对齐的图片数 确定N
     num_zeros=1024-N
     print(N)
@@ -132,10 +134,7 @@ plt.subplot(3,1,3)
 plt.plot(sequence_r)
 plt.show()
 
-print(sequence_b)
-print(sequence_b.dtype)
-
-if(saveSequenceData):
+if(saveSequenceData): # 保存波形数组到硬盘
     file=open(basePath+"sequence_n.txt","w")
     file.write(str(N))
     file.close()
