@@ -4,19 +4,84 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 from sklearn.decomposition import FastICA
+import time
+import queue
+import threading
+
+'''把遇到的问题/bug/待修改的部分写在这里
+格式:[行号](语句)问题
+为了防止更改时行号变化 应把语句复制粘贴
+
+[200](sum_1+=xb[i,j]) 在第一帧(0,0)位置会报warning:RuntimeWarning: overflow encountered in scalar add sum_2+=xg[i,j] 原因暂不清楚 但似乎不影响使用
+[]()关于ICA算法 在plt的最后一张图表的最后一张图为fft的分析最终结果 似乎有的时候最后一张图直接是空的/是单调的没有峰值 这时候输出的最终结果直接是最小值60或最大值(最大值似乎与输入的视频秒数有关) 当这种情况发生时似乎应该认为ICA失败了
+[]()关于摄像头 时间不能过短 1秒时ICA直接报错 5秒时plt最后一张图表直接是空的 --这个似乎也是ICA的问题 一旦输入过短就会不行
+'''
+
+# 是否使用电脑摄像头作为源信息 注意 优先级比loadSequenceData低
+useCamera=True
+# 若使用摄像头 采集视频秒数 与 摄像头路径(若cameraPath=0 则使用默认摄像头)
+videoCaptureTime=5
+camraPath=0
 
 # 保存波形数据到文件 避免每次都处理一遍视频耽误时间
-saveSequenceData=True
-loadSequenceData=True
+saveSequenceData=False
+loadSequenceData=False
 # 文件夹路径
 basePath='C://Users//wangt//Desktop//heartbeat-master (1)//heartbeat-master//atrial fibrillation//'
 # 视频帧率 会影响下面算法
 Fs=30
 
+def waitKey(): # 用于cv2.imshow()之后 自带按esc退出功能
+    key=cv2.waitKey(1)
+    if(key==27):
+        exit(0)
+
+class delaylessVideoCapture: # 读取摄像头帧
+    def __init__(self, path=0): # 电脑默认摄像头path = 0
+        self.cap = cv2.VideoCapture(path)
+        self.q = queue.Queue() # 摄像头读出的帧存放在队列中
+        self.lock = threading.Lock()
+        self.running = True  # 线程开关 指示摄像头是否录制
+        self.t = threading.Thread(target=self._reader)
+        self.t.daemon = True # 设置为主线程结束时直接结束摄像头线程
+        self.t.start()
+
+    def _reader(self): # 保存摄像头录制的图片到self.q中
+        while self.running:
+            ret,frameRead = self.cap.read()
+            cv2.imshow("camera",frameRead)
+            waitKey()
+            if not ret:
+                print("Cam error!")
+                exit(0)
+            self.q.put(frameRead)
+
+    def read(self): # 从保存的图片队列(self.q)中取出帧
+        if self.running == False and self.q.empty(): # 处理结束返回state 0
+            state = 0
+            ret = 0
+        elif self.running == True and self.q.empty(): # 摄像头仍在录制但暂存的帧的队列self.q暂时为空 返回state1
+            state = 1
+            ret = 0
+        else:
+            state = 2 # 正常读取 返回state2
+            ret = self.q.get()
+        return state,ret
+
+    def stop(self): # 关闭摄像头读取
+        self.running = False
+        self.t.join()
+        self.cap.release()
+    
+    def capset(self,height,weight,fps): # 摄像头参数设置
+        if not self.cap.isOpened():
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT,height)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,weight)
+            self.cap.set(cv2.CAP_PROP_FPS,fps)
+
 if(loadSequenceData): # 加载保存的波形数组
     file=open(basePath+"sequence_n.txt","r")
     N=int(file.read())
-    num_zeros=1024-N
     file.close()
 
     sequence_b = np.zeros(N)
@@ -39,29 +104,53 @@ if(loadSequenceData): # 加载保存的波形数组
     file.close()
 
 else:
-    #from tools.detect import MtcnnDetector
-    #import faceswap
-    cap=cv2.VideoCapture(basePath+'my_video.mp4')
+    imageList=[] # 用于存放图片的队列
 
+    if useCamera: # 采用从摄像头录制的方式
+        cap=delaylessVideoCapture(camraPath)
+        videoStartTime = time.time()
+        while True:
+            timeSpentVideo = time.time() - videoStartTime # 计时停止录制
+            if timeSpentVideo >= videoCaptureTime:
+                cap.stop()
+            state,frame = cap.read()
+            if state==1: # 摄像头仍在录制但暂存的帧的队列self.q暂时为空
+                continue
+            elif state==2: # 正常读取
+                imageList.append(frame)
+            else: # 读取结束
+                break
+            
+    elif not useCamera: # 采用最原本的读取原视频方式
+
+        #from tools.detect import MtcnnDetector
+        #import faceswap
+        n=0
+        N=372
+        num_zeros=1024-N
+        # 加载模型参数，构造检测器
+        #mtcnn_detector = MtcnnDetector(min_face_size=24, use_cuda=False) 
+
+        while(n<N):
+            
+            #ret,frame=cap.read()
+            print(basePath+str(n)+'.jpg')
+            frame=cv2.imread(basePath+str(n)+'.jpg')
+            imageList.append(frame)
+            n+=1
+
+    N=len(imageList)
     n=0
-    N=int(cap.get(7))#根据的对齐的图片数 确定N
-    num_zeros=1024-N
-    print(N)
     sequence_b=np.zeros(N)
     sequence_g=np.zeros(N)
     sequence_r=np.zeros(N)
-    # 加载模型参数，构造检测器
-    #mtcnn_detector = MtcnnDetector(min_face_size=24, use_cuda=False) 
-
     while(n<N):
-        
-        #ret,frame=cap.read()
-        print(basePath+str(n)+'.jpg')
-        frame=cv2.imread(basePath+str(n)+'.jpg')
 
-    #使用detectMultiScale进行人脸检测
+        ''' ----------人脸识别+取平均值部分----------'''
+        #使用detectMultiScale进行人脸检测
+        frame=imageList[n]
         image=frame
-        
+
         gray= cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
         face_cascade = cv2.CascadeClassifier(basePath+"haarcascade_frontalface_default.xml")
         faces = face_cascade.detectMultiScale(
@@ -69,44 +158,40 @@ else:
             scaleFactor = 1.15,
                 minNeighbors = 5,
             minSize = (3,3)
-                                    )
-    #使用mtcnn进行人脸检测
-    #    image=frame
-    #    #opencv所得图像为BGR，将其转换为RGB才能在dlib中使用
-    #    RGB_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    #    # 检测得到faces以及特征点
-    #    faces, landmarks = mtcnn_detector.detect_face(RGB_image)
-        #print(landmarks.shape)
-    #    num_faces=faces[0,4]
-    #    if num_faces==0:
-    #        print("Sorry, there were no faces found")
-    #        N-=1#某一帧检测不到人脸，将N减1
-    #        continue
+            )
+        #使用mtcnn进行人脸检测
+        #    image=frame
+        #    #opencv所得图像为BGR，将其转换为RGB才能在dlib中使用
+        #    RGB_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        #    # 检测得到faces以及特征点
+        #    faces, landmarks = mtcnn_detector.detect_face(RGB_image)
+            #print(landmarks.shape)
+        #    num_faces=faces[0,4]
+        #    if num_faces==0:
+        #        print("Sorry, there were no faces found")
+        #        N-=1#某一帧检测不到人脸，将N减1
+        #        continue
 
-    
-        
-        
-    #显示人脸
+        #显示人脸
         for (x,y,w,h) in faces:
-            x=845
-            y=400
-            w=100
-            h=100
-        # x=int(x+w*0.65)
-        # y=int(y+h*0.5)
-        # w=int(w*0.2)
+            print(x,y,w,h)
+            # x=845
+            # y=400
+            # w=100
+            # h=100
+            # x=int(x+w*0.65)
+            # y=int(y+h*0.5)
+            # w=int(w*0.2)
             #h=int(h*0.2)
             cv2.rectangle(image,(x,y),(x+w,y+h),(0,255,0),2)
             cv2.imshow("capture",image)
-    #分离RGB分量
+            #分离RGB分量
             img=image[y:y+h,x:x+w]
             xb,xg,xr=cv2.split(img)
-        # cv2.imshow("capture",img)
-            key=cv2.waitKey(1)
-            if(key==27):
-                exit(0)
+            # cv2.imshow("capture",img)
+            waitKey()
 
-    #取均值
+            #取均值
             sum_1=0
             sum_2=0
             sum_3=0
@@ -118,12 +203,9 @@ else:
             sequence_b[n]=sum_1/(xb.shape[0]*xb.shape[1])
             sequence_g[n]=sum_2/(xg.shape[0]*xg.shape[1])
             sequence_r[n]=sum_3/(xr.shape[0]*xr.shape[1])
-            n+=1
             #print(n)
-    cap.release()
+        n+=1
     cv2.destroyAllWindows()
-    #对三个序列进行fastica分解
-    N=n
 
 plt.figure()
 plt.subplot(3,1,1)
@@ -154,6 +236,7 @@ if(saveSequenceData): # 保存波形数组到硬盘
         file.write('\n')
     file.close()
 
+''' ----------ICA部分----------'''
 S=np.c_[sequence_b,sequence_g,sequence_r]
 print(S.shape)
 for i in range(N):
@@ -223,13 +306,12 @@ plt.figure()
 plt.subplot(2,1,1)
 plt.plot(a)
     
-
+''' ----------fft部分----------'''
+num_zeros=1024-N
 sf=np.zeros(N+num_zeros)
 for i in range(N):
     sf[i]=a[i]
-
 transformed=np.fft.fft(sf)
-N+=num_zeros
 plt.subplot(2,1,2)
 #采样频率为Fs
 trans_slice=abs(transformed)[int(1*N/Fs):int(1.5*N/Fs)]
