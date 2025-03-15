@@ -7,6 +7,7 @@ from sklearn.decomposition import FastICA
 import time
 import queue
 import threading
+import os
 
 '''把遇到的问题/bug/待修改的部分写在这里
 格式:[行号](语句)问题
